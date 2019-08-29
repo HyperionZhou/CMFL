@@ -53,13 +53,13 @@ class Net(nn.Module):
         x = self.fc2(x)
         return F.log_softmax(x, dim=1)
     
-def cli_train(args, old_model, device, train_loader, epoch, last_update):
+def cli_train(args, old_model, device, train_loader, epoch, last_updates):
     model = copy.deepcopy(old_model)
     model.train()
     optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
     model.zero_grad()
     
-    cli_ite_num = 3
+    cli_ite_num = args.cli_ite_num
     for batch_idx, (data, target) in enumerate(train_loader):
         if cli_ite_num == 0:
             break
@@ -70,10 +70,8 @@ def cli_train(args, old_model, device, train_loader, epoch, last_update):
         loss = F.nll_loss(output, target)
         loss.backward()
         optimizer.step()
-        
-    relv, model = check_relevance(model, old_model)
-        
-    return relv, model
+
+    return check_relevance(model, old_model, last_updates)
 
 def glo_train(args, model, device, train_loaders, optimizer, epoch, commu, flag):
     model.train()
@@ -84,27 +82,23 @@ def glo_train(args, model, device, train_loaders, optimizer, epoch, commu, flag)
             tmp_flag = True
             
             for i in range(args.client_num):
-                relv, grad = cli_train(args, model, device, train_loaders[i], epoch, None)
-                new_model_list.append(grad)
+                _, new_model = cli_train(args, model, device, train_loaders[i], epoch, None)
+                new_model_list.append(new_model)
                 
             cur_commu = args.client_num
             flag = False
             
         else:
             cur_commu = 0
-            last_update = []
-            
-            for item in model.parameters():
-                last_update.append(item.grad)
 
             for i in range(args.client_num):
-                relv, new_model = cli_train(args, model, device, train_loaders[i], epoch, last_update)
+                relv, new_model = cli_train(args, model, device, train_loaders[i], epoch, last_updates)
                 if relv:
                     cur_commu += 1
                     new_model_list.append(new_model)
         
         # Merge model grad
-        merge(model, new_model_list)
+        last_updates = merge(model, new_model_list)
         
         commu.append(cur_commu)
 
@@ -134,37 +128,44 @@ def test(args, model, device, test_loader, commu):
     pass
     #
     
-def check_relevance(model, old_model):
-    if model is None or old_model is None:
-        return True
-    
+def check_relevance(model, old_model, last_updates):
     sign_sum = 0
     sign_size = 0
     rel_threshold = 0.5
     model_para_list = []
+    cur_updates = []
+    
+    if last_updates is None:
+        for cur_para, old_para in zip(model.parameters(), old_model.parameters()):
+            cur_updates.append(cur_para.data - old_para.data)
+        return True, cur_updates
     
     for cur_para, old_para in zip(model.parameters(), old_model.parameters()):
+        cur_updates.append(cur_para.data - old_para.data)
         
-        cur_sign = torch.sign(cur_para)
-        old_sign = torch.sign(old_para)
+        # Collect model parameters into lists
+        model_para_list.append(cur_para)
+        
+    for i in range(len(cur_updates)):
+        cur_sign = torch.sign(cur_updates[i])
+        old_sign = torch.sign(last_updates[i])
         
         sign = cur_sign * old_sign
         sign[sign < 0] = 0
         sign_sum += torch.sum(sign)
         sign_size += sign.numel()
-        
-        # Collect model parameters into lists
-        model_para_list.append(cur_para)
     
     # 0.000001 is given in case of dividing by 0
     e = sign_sum / (sign_size + 0.000001)
-    
+
     return e >= rel_threshold, model_para_list
 
 def merge(model, new_model_list):
     if len(new_model_list) == 0:
         print("No model's revelence is higher than threshold.")
         return
+    
+    old_model = copy.deepcopy(model)
     
     para_ind = 0
     for param in model.parameters():
@@ -177,6 +178,13 @@ def merge(model, new_model_list):
         
         para_ind += 1
         param.data /= len(new_model_list)
+    
+    # Record updates
+    last_updates = []
+    for old_param, new_param in zip(old_model.parameters(), model.parameters()):
+        last_updates.append(new_param.data - old_param.data)
+    
+    return last_updates
     
 def main():
     # Training settings
@@ -201,6 +209,7 @@ def main():
     parser.add_argument('--save-model', action='store_true', default=False,
                         help='For Saving the current Model')
     parser.add_argument('--client-num', type=int, default=10)
+    parser.add_argument('--cli-ite-num', type=int, default=3)
     args = parser.parse_args()
     use_cuda = not args.no_cuda and torch.cuda.is_available()
 
