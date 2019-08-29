@@ -146,7 +146,8 @@ def check_relevance(cli_u_list, glo_u_list):
         sign_sum += torch.sum(sign)
         sign_size += sign.numel()
 
-    e = sign_sum / sign_size
+    # 0.000001 is given in case of dividing by 0
+    e = sign_sum / (sign_size + 0.000001)
     
     return e >= rel_threshold
 

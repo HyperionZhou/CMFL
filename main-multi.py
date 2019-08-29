@@ -71,22 +71,21 @@ def cli_train(args, old_model, device, train_loader, epoch, last_update):
         loss.backward()
         optimizer.step()
         
-    relv, updates = check_relevance(model, old_model)
+    relv, model = check_relevance(model, old_model)
         
-    return relv, updates
+    return relv, model
 
 def glo_train(args, model, device, train_loaders, optimizer, epoch, commu, flag):
     model.train()
     for i in range(DATA_LEN // (args.client_num * args.batch_size)):
-        optimizer.zero_grad()
-        new_para_grad_list = []
+        new_model_list = []
         
         if flag:
             tmp_flag = True
             
             for i in range(args.client_num):
                 relv, grad = cli_train(args, model, device, train_loaders[i], epoch, None)
-                new_para_grad_list.append(grad)
+                new_model_list.append(grad)
                 
             cur_commu = args.client_num
             flag = False
@@ -99,14 +98,14 @@ def glo_train(args, model, device, train_loaders, optimizer, epoch, commu, flag)
                 last_update.append(item.grad)
 
             for i in range(args.client_num):
-                relv, grad = cli_train(args, model, device, train_loaders[i], epoch, last_update)
+                relv, new_model = cli_train(args, model, device, train_loaders[i], epoch, last_update)
                 if relv:
                     cur_commu += 1
-                    new_para_grad_list.append(grad)
+                    new_model_list.append(new_model)
         
         # Merge model grad
-        merge(model, new_para_grad_list)
-        optimizer.step()
+        merge(model, new_model_list)
+        
         commu.append(cur_commu)
 
         
@@ -131,6 +130,7 @@ def test(args, model, device, test_loader, commu):
         100. * correct / len(test_loader.dataset)))
     
     # Draw picture acc vs commu
+    # Use sum matrix
     pass
     #
     
@@ -140,9 +140,11 @@ def check_relevance(model, old_model):
     
     sign_sum = 0
     sign_size = 0
-    rel_threshold = 0.8
+    rel_threshold = 0.5
+    model_para_list = []
     
-    for cur_para, old_para in zip(model, old_model):
+    for cur_para, old_para in zip(model.parameters(), old_model.parameters()):
+        
         cur_sign = torch.sign(cur_para)
         old_sign = torch.sign(old_para)
         
@@ -150,18 +152,31 @@ def check_relevance(model, old_model):
         sign[sign < 0] = 0
         sign_sum += torch.sum(sign)
         sign_size += sign.numel()
+        
+        # Collect model parameters into lists
+        model_para_list.append(cur_para)
     
-    return e >= rel_threshold
+    # 0.000001 is given in case of dividing by 0
+    e = sign_sum / (sign_size + 0.000001)
+    
+    return e >= rel_threshold, model_para_list
 
-def merge(model, new_para_grad_list):
+def merge(model, new_model_list):
+    if len(new_model_list) == 0:
+        print("No model's revelence is higher than threshold.")
+        return
+    
     para_ind = 0
-    for item in model.parameters():
-        item.grad = new_para_grad_list[0][para_ind]
-        for i in range(1, len(new_para_grad_list)):
-            item.grad += new_para_grad_list[i][para_ind]
+    for param in model.parameters():
+        print(param.data)
+        param.data = new_model_list[0][para_ind].data
+        for i in range(1, len(new_model_list)):
+            # cannot use "+=" cause torch doesn't allow in-place
+            # operations on variables you create directly
+            param.data = param.data + new_model_list[i][para_ind].data
         
         para_ind += 1
-        item.grad /= len(new_para_grad_list)
+        param.data /= len(new_model_list)
     
 def main():
     # Training settings
