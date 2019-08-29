@@ -1,2 +1,2 @@
-# CMFL
-CMFL: Mitigating Communication Overhead for Federated Learning / PyTorch reimplementation.
+pip install -r requirements.txt
+python main.py
